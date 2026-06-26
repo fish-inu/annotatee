@@ -1,0 +1,35 @@
+{
+  "name": "annotate-web",
+  "version": "1.0.0",
+  "description": "A small Vue text annotation workspace with markdown export.",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "keywords": [
+    "annotation",
+    "vue",
+    "vite"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "^11.7.0",
+      "onFail": "download"
+    }
+  },
+  "type": "module",
+  "dependencies": {
+    "@recogito/text-annotator": "^4.2.5",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "vite": "^8.1.0",
+    "vue": "^3.5.38"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vue-tsc": "^3.3.5"
+  }
+}
