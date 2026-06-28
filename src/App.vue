@@ -1,183 +1,413 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import {
-  createTextAnnotator,
-  type StoreChangeEvent,
-  type TextAnnotation,
-  type TextAnnotator
-} from '@recogito/text-annotator';
-import '@recogito/text-annotator/text-annotator.css';
-import { articleDeck, articleText, articleTitle } from './data/sampleArticle';
-import {
-  type AnnotationRecord,
-  type ContextMode,
-  type ContextSettings,
-  toAnnotationRecord
-} from './domain/annotationContext';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import type { AnnotationRecord, ContextMode } from './domain/annotationContext';
 import { formatAnnotationsAsMarkdown } from './domain/markdown';
+import { isStateChangedMessage } from './extension/messages';
+import { getUserSettings, writeUserSettings } from './extension/storage';
+import type {
+  ArticleTextResponse,
+  ContentRequest,
+  DeleteAnnotationResponse,
+  ExtensionState,
+  StoredAnnotation,
+  UpdateSettingsResponse,
+  UserSettings
+} from './extension/types';
+import {
+  CONTEXT_MODES,
+  CONTEXT_RANGE_LIMIT,
+  DEFAULT_USER_SETTINGS,
+  normalizeUserSettings
+} from './extension/types';
 
-const articleElement = ref<HTMLElement | null>(null);
-const annotations = ref<TextAnnotation[]>([]);
-const contextMode = ref<ContextMode>('sentence');
-const contextRange = ref(1);
-const copyStatus = ref('Copy markdown');
+const CONTEXT_MODE_LABELS: Record<ContextMode, string> = {
+  paragraph: 'Paragraphs',
+  sentence: 'Sentences',
+  words: 'Words'
+};
 
-let annotator: TextAnnotator<TextAnnotation> | null = null;
-
-const contextSettings = computed<ContextSettings>(() => ({
-  mode: contextMode.value,
-  range: contextRange.value
+const contextModeOptions = CONTEXT_MODES.map((mode) => ({
+  label: CONTEXT_MODE_LABELS[mode],
+  value: mode
 }));
+const settings = ref<UserSettings>(normalizeUserSettings(DEFAULT_USER_SETTINGS));
+const state = ref<ExtensionState>(createUnavailableState(settings.value));
+const copyStatus = ref('Copy');
+const isRefreshing = ref(false);
+let customTextSaveTimer = 0;
 
 const records = computed<AnnotationRecord[]>(() =>
-  annotations.value
-    .map((annotation) => toAnnotationRecord(annotation, articleText, contextSettings.value))
-    .filter((record): record is AnnotationRecord => record !== null)
-    .sort((first, second) => first.span.start - second.span.start)
+  state.value.annotations.map((annotation) => ({
+    context: annotation.context,
+    createdAt: annotation.createdAt,
+    id: annotation.id,
+    span: annotation.span,
+    updatedAt: annotation.updatedAt
+  }))
+);
+const title = computed(() => state.value.article?.articleTitle || state.value.article?.pageTitle || 'Annotatee');
+const subtitle = computed(() => {
+  if (!state.value.enabled) {
+    return 'Inactive';
+  }
+
+  return state.value.article?.siteName || state.value.article?.areaLabel || 'Article ready';
+});
+const annotationCountLabel = computed(() =>
+  `${state.value.annotations.length} annotation${state.value.annotations.length === 1 ? '' : 's'}`
+);
+const canCopy = computed(
+  () =>
+    state.value.annotations.length > 0 ||
+    (state.value.enabled && settings.value.copy.includeArticleText) ||
+    settings.value.copy.customText.trim().length > 0
 );
 
-const markdown = computed(() => formatAnnotationsAsMarkdown(records.value));
-
-const rangeLabel = computed(() => {
-  if (contextMode.value === 'words') {
-    return `${contextRange.value} word${contextRange.value === 1 ? '' : 's'}`;
-  }
-
-  if (contextMode.value === 'sentence') {
-    return `${contextRange.value} sentence${contextRange.value === 1 ? '' : 's'}`;
-  }
-
-  return `${contextRange.value} paragraph${contextRange.value === 1 ? '' : 's'}`;
-});
-
 onMounted(() => {
-  if (!articleElement.value) {
-    return;
+  void refreshState();
+  if (hasChromeRuntime()) {
+    chrome.runtime.onMessage.addListener(handleRuntimeMessage);
   }
-
-  const instance = createTextAnnotator<TextAnnotation, TextAnnotation>(articleElement.value, {
-    renderer: 'SPANS',
-    style: {
-      fill: '#ffd166',
-      fillOpacity: 0.45,
-      underlineColor: '#a86d00',
-      underlineThickness: 2
-    }
-  });
-
-  const syncAnnotations = (event?: StoreChangeEvent<TextAnnotation>) => {
-    annotations.value = event?.state ?? instance.getAnnotations();
-  };
-
-  instance.state.store.observe(syncAnnotations);
-  syncAnnotations();
-  annotator = instance;
 });
 
 onBeforeUnmount(() => {
-  annotator?.destroy();
-  annotator = null;
+  persistCurrentSettings();
+
+  if (hasChromeRuntime()) {
+    chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
+  }
 });
 
-watch([contextMode, contextRange], () => {
-  copyStatus.value = 'Copy markdown';
-});
+function handleRuntimeMessage(message: unknown) {
+  if (isStateChangedMessage(message)) {
+    applyExtensionState(message.state);
+  }
+}
 
-function removeAnnotation(id: string) {
-  annotator?.removeAnnotation(id);
+async function refreshState() {
+  isRefreshing.value = true;
+
+  try {
+    const [storedSettings, activeState] = await Promise.all([
+      getUserSettings(),
+      sendMessageToActiveTab<ExtensionState>({ type: 'GET_STATE' })
+    ]);
+
+    if (activeState) {
+      applyExtensionState(activeState);
+    } else {
+      const nextSettings = normalizeUserSettings(storedSettings);
+      settings.value = nextSettings;
+      state.value = createUnavailableState(nextSettings);
+    }
+  } finally {
+    isRefreshing.value = false;
+  }
+}
+
+async function deleteAnnotation(annotation: StoredAnnotation) {
+  const response = await sendMessageToActiveTab<DeleteAnnotationResponse>({
+    id: annotation.id,
+    type: 'DELETE_ANNOTATION'
+  });
+
+  if (response?.ok) {
+    applyExtensionState(response.state);
+  }
 }
 
 async function copyMarkdown() {
   try {
-    await navigator.clipboard.writeText(markdown.value);
+    const articleText = settings.value.copy.includeArticleText
+      ? await getArticleTextForCopy()
+      : undefined;
+
+    await navigator.clipboard.writeText(
+      formatAnnotationsAsMarkdown(records.value, {
+        articleText,
+        customText: settings.value.copy.customText
+      })
+    );
     copyStatus.value = 'Copied';
-    window.setTimeout(() => {
-      copyStatus.value = 'Copy markdown';
-    }, 1400);
   } catch {
-    copyStatus.value = 'Copy failed';
+    copyStatus.value = 'Failed';
   }
+
+  window.setTimeout(() => {
+    copyStatus.value = 'Copy';
+  }, 1400);
+}
+
+function updateContextMode(event: Event) {
+  const mode = (event.target as HTMLSelectElement).value as ContextMode;
+
+  void applySettings({
+    ...settings.value,
+    context: {
+      ...settings.value.context,
+      mode
+    }
+  });
+}
+
+function updateContextRange(event: Event) {
+  const range = Number((event.target as HTMLInputElement).value);
+
+  void applySettings({
+    ...settings.value,
+    context: {
+      ...settings.value.context,
+      range
+    }
+  });
+}
+
+function toggleIncludeArticleText(event: Event) {
+  const includeArticleText = (event.target as HTMLInputElement).checked;
+
+  void applySettings({
+    ...settings.value,
+    copy: {
+      ...settings.value.copy,
+      includeArticleText
+    }
+  });
+}
+
+function updateCustomText(event: Event) {
+  const customText = (event.target as HTMLTextAreaElement).value;
+  const nextSettings = {
+    ...settings.value,
+    copy: {
+      ...settings.value.copy,
+      customText
+    }
+  };
+
+  settings.value = nextSettings;
+  state.value = {
+    ...state.value,
+    settings: nextSettings
+  };
+  scheduleSettingsSave();
+}
+
+function scheduleSettingsSave() {
+  window.clearTimeout(customTextSaveTimer);
+  customTextSaveTimer = window.setTimeout(() => {
+    customTextSaveTimer = 0;
+    void applySettings(settings.value);
+  }, 350);
+}
+
+function persistCurrentSettings() {
+  if (customTextSaveTimer === 0) {
+    return;
+  }
+
+  window.clearTimeout(customTextSaveTimer);
+  customTextSaveTimer = 0;
+  void applySettings(settings.value);
+}
+
+async function applySettings(nextSettings: UserSettings) {
+  const savedSettings = await writeUserSettings(nextSettings);
+  settings.value = savedSettings;
+  state.value = {
+    ...state.value,
+    settings: savedSettings
+  };
+
+  const response = await sendMessageToActiveTab<UpdateSettingsResponse>({
+    settings: savedSettings,
+    type: 'UPDATE_SETTINGS'
+  });
+
+  if (response?.ok) {
+    applyExtensionState(response.state);
+  }
+}
+
+async function getArticleTextForCopy(): Promise<string | undefined> {
+  const response = await sendMessageToActiveTab<ArticleTextResponse>({
+    type: 'GET_ARTICLE_TEXT'
+  });
+
+  return response?.ok ? response.articleText : undefined;
+}
+
+function applyExtensionState(nextState: ExtensionState) {
+  const nextSettings = normalizeUserSettings(nextState.settings);
+  settings.value = nextSettings;
+  state.value = {
+    ...nextState,
+    settings: nextSettings
+  };
+}
+
+function createUnavailableState(nextSettings: UserSettings): ExtensionState {
+  return {
+    annotations: [],
+    enabled: false,
+    reason: 'Open an article tab to use Annotatee.',
+    settings: nextSettings
+  };
+}
+
+function sendMessageToActiveTab<T>(message: ContentRequest): Promise<T | null> {
+  if (typeof chrome === 'undefined' || !chrome.tabs?.query) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0]?.id;
+
+      if (typeof tabId !== 'number') {
+        resolve(null);
+        return;
+      }
+
+      chrome.tabs.sendMessage(tabId, message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+
+        resolve((response as T) ?? null);
+      });
+    });
+  });
+}
+
+function hasChromeRuntime(): boolean {
+  return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.onMessage);
 }
 </script>
 
 <template>
-  <main class="workspace">
-    <section class="reader-panel" aria-labelledby="article-title">
-      <div class="article-heading">
-        <p class="eyebrow">Sample Article</p>
-        <h1 id="article-title">{{ articleTitle }}</h1>
-        <p>{{ articleDeck }}</p>
+  <main class="popup-shell">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">A</div>
+      <div class="title-block">
+        <p>{{ subtitle }}</p>
+        <h1>{{ title }}</h1>
       </div>
+      <button
+        class="icon-button"
+        type="button"
+        title="Refresh"
+        aria-label="Refresh"
+        :disabled="isRefreshing"
+        @click="refreshState"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 12a9 9 0 0 1-15.4 6.4" />
+          <path d="M3 12A9 9 0 0 1 18.4 5.6" />
+          <path d="M18 2v4h4" />
+          <path d="M6 22v-4H2" />
+        </svg>
+      </button>
+    </header>
 
-      <article ref="articleElement" class="article-body" aria-label="Annotatable article">
-        {{ articleText }}
-      </article>
+    <section class="status-strip" aria-label="Annotation summary">
+      <div>
+        <span>{{ state.annotations.length }}</span>
+        <p>{{ annotationCountLabel }}</p>
+      </div>
+      <button
+        class="copy-button"
+        type="button"
+        :disabled="!canCopy"
+        @click="copyMarkdown"
+      >
+        {{ copyStatus }}
+      </button>
     </section>
 
-    <aside class="state-panel" aria-label="Annotation state">
-      <section class="control-strip" aria-label="Context settings">
-        <div class="field">
-          <label for="context-mode">Context</label>
-          <select id="context-mode" v-model="contextMode">
-            <option value="words">Words</option>
-            <option value="sentence">Sentence</option>
-            <option value="paragraph">Paragraph</option>
+    <section class="settings-panel" aria-label="Annotation settings">
+      <label class="toggle-row">
+        <input
+          type="checkbox"
+          :checked="settings.copy.includeArticleText"
+          @change="toggleIncludeArticleText"
+        />
+        <span>Include article text</span>
+      </label>
+
+      <label class="field field--textarea">
+        <span>Append text</span>
+        <textarea
+          rows="3"
+          :value="settings.copy.customText"
+          @input="updateCustomText"
+          @change="updateCustomText"
+        ></textarea>
+      </label>
+
+      <div class="settings-grid">
+        <label class="field">
+          <span>Context</span>
+          <select :value="settings.context.mode" @change="updateContextMode">
+            <option
+              v-for="option in contextModeOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
           </select>
-        </div>
+        </label>
 
-        <div class="field">
-          <label for="context-range">Range: {{ rangeLabel }}</label>
+        <label class="field field--range">
+          <span>Range</span>
           <input
-            id="context-range"
-            v-model.number="contextRange"
-            type="range"
-            min="0"
-            max="4"
-            step="1"
+            type="number"
+            inputmode="numeric"
+            :min="CONTEXT_RANGE_LIMIT.min"
+            :max="CONTEXT_RANGE_LIMIT.max"
+            :value="settings.context.range"
+            @change="updateContextRange"
           />
-        </div>
-      </section>
+        </label>
+      </div>
+    </section>
 
-      <section class="summary-row" aria-label="Annotation summary">
+    <section v-if="!state.enabled" class="notice" aria-live="polite">
+      {{ state.reason }}
+    </section>
+
+    <section v-else class="annotation-list" aria-label="Annotations">
+      <article v-if="state.annotations.length === 0" class="notice">
+        No annotations yet.
+      </article>
+
+      <article
+        v-for="annotation in state.annotations"
+        v-else
+        :key="annotation.id"
+        class="annotation-card"
+      >
         <div>
-          <span>{{ records.length }}</span>
-          <p>Annotations</p>
+          <p class="quote">{{ annotation.span.text }}</p>
+          <p class="context">{{ annotation.context.text }}</p>
         </div>
-        <button type="button" class="primary-action" @click="copyMarkdown">
-          {{ copyStatus }}
-        </button>
-      </section>
-
-      <section class="annotation-list" aria-label="Structured annotations">
-        <article v-if="records.length === 0" class="empty-state">
-          Select text in the article to create an annotation.
-        </article>
-
-        <article
-          v-for="record in records"
-          v-else
-          :key="record.id"
-          class="annotation-card"
+        <button
+          class="delete-button"
+          type="button"
+          title="Delete annotation"
+          aria-label="Delete annotation"
+          @click="deleteAnnotation(annotation)"
         >
-          <header>
-            <div>
-              <p class="span-label">{{ record.span.text }}</p>
-              <p class="offset-label">{{ record.span.start }}-{{ record.span.end }}</p>
-            </div>
-            <button type="button" class="ghost-action" @click="removeAnnotation(record.id)">
-              Delete
-            </button>
-          </header>
-          <p class="context-copy">{{ record.context.text }}</p>
-        </article>
-      </section>
-
-      <section class="markdown-panel" aria-label="Markdown export preview">
-        <header>
-          <h2>Markdown</h2>
-        </header>
-        <pre>{{ markdown }}</pre>
-      </section>
-    </aside>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 6h18" />
+            <path d="M8 6V4h8v2" />
+            <path d="M19 6l-1 14H6L5 6" />
+            <path d="M10 11v5" />
+            <path d="M14 11v5" />
+          </svg>
+        </button>
+      </article>
+    </section>
   </main>
 </template>

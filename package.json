@@ -1,10 +1,11 @@
 {
-  "name": "annotate-web",
+  "name": "annotatee",
   "version": "1.0.0",
-  "description": "A small Vue text annotation workspace with markdown export.",
+  "description": "A Chrome extension for annotating readable article text.",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vue-tsc --noEmit && vite build && npm run build:extension-scripts",
+    "build:extension-scripts": "rolldown --config rolldown.config.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "keywords": [
@@ -23,6 +24,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@recogito/text-annotator": "^4.2.5",
     "@vitejs/plugin-vue": "^6.0.7",
     "vite": "^8.1.0",

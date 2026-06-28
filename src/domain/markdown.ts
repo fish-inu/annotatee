@@ -1,30 +1,34 @@
-import type { AnnotationRecord, ContextMode } from './annotationContext';
+import type { AnnotationRecord } from './annotationContext';
 
-const MODE_LABELS: Record<ContextMode, string> = {
-  words: 'words',
-  sentence: 'sentences',
-  paragraph: 'paragraphs'
-};
+interface MarkdownOptions {
+  articleText?: string;
+  customText?: string;
+}
 
-export function formatAnnotationsAsMarkdown(records: AnnotationRecord[]): string {
-  if (records.length === 0) {
-    return '# Annotations\n\nNo annotations yet.';
+export function formatAnnotationsAsMarkdown(
+  records: AnnotationRecord[],
+  options: MarkdownOptions = {}
+): string {
+  const annotations =
+    records.length === 0
+      ? '# Annotations\n\nNo annotations yet.'
+      : records
+          .flatMap((record) => [
+            `## ${escapeMarkdownHeading(record.span.text)}`,
+            '',
+            '> ' + record.context.text.replace(/\n+/g, '\n> '),
+            ''
+          ])
+          .join('\n');
+  const articleText = options.articleText?.trim();
+  const customText = options.customText?.trim();
+  const segments = articleText ? [articleText, annotations] : [annotations];
+
+  if (customText) {
+    segments.push(customText);
   }
 
-  return [
-    '# Annotations',
-    '',
-    ...records.flatMap((record, index) => [
-      `## ${index + 1}. ${escapeMarkdownHeading(record.span.text)}`,
-      '',
-      `- Span: "${record.span.text}"`,
-      `- Offsets: ${record.span.start}-${record.span.end}`,
-      `- Context: ${record.context.range} ${MODE_LABELS[record.context.mode]} around selection`,
-      '',
-      '> ' + record.context.text.replace(/\n+/g, '\n> '),
-      ''
-    ])
-  ].join('\n');
+  return segments.join('\n\n');
 }
 
 function escapeMarkdownHeading(value: string): string {
