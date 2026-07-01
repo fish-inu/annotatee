@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Annotatee",
+  "description": "Annotate readable article passages from the right-click menu.",
+  "version": "1.0.0",
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "Annotatee"
+  },
+  "background": {
+    "service_worker": "assets/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["assets/contentScript.js"],
+      "css": ["assets/contentScript.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["activeTab", "contextMenus", "storage"]
+}
