@@ -26,6 +26,7 @@ export interface AnnotationRecord {
   span: TextSpan;
   context: AnnotationContext;
   createdAt?: string;
+  note?: string;
   updatedAt?: string;
 }
 

@@ -5,9 +5,16 @@ export function isContentRequest(message: unknown): message is ContentRequest {
     return false;
   }
 
+  if (message.type === 'DELETE_ANNOTATION') {
+    return typeof message.id === 'string';
+  }
+
+  if (message.type === 'UPDATE_ANNOTATION_NOTE') {
+    return typeof message.id === 'string' && typeof message.note === 'string';
+  }
+
   return (
     message.type === 'ANNOTATE_SELECTION' ||
-    message.type === 'DELETE_ANNOTATION' ||
     message.type === 'GET_ARTICLE_TEXT' ||
     message.type === 'GET_STATE' ||
     message.type === 'UPDATE_SETTINGS'

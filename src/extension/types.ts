@@ -5,10 +5,21 @@ import type {
   TextSpan
 } from '../domain/annotationContext';
 
-export const ANNOTATION_STYLE_IDS = ['yellow', 'green', 'blue', 'pink', 'underline'] as const;
+export const ANNOTATION_STYLE_IDS = [
+  'yellow',
+  'green',
+  'blue',
+  'pink',
+  'underline',
+  'dotted',
+  'dashed',
+  'double',
+  'lowlight'
+] as const;
 export type AnnotationStyleId = (typeof ANNOTATION_STYLE_IDS)[number];
 
 export const DEFAULT_ANNOTATION_STYLE: AnnotationStyleId = 'yellow';
+export const ANNOTATION_NOTE_LIMIT = 2000;
 
 export const CONTEXT_MENU_ID = 'annotatee.annotate-selection';
 export const CONTEXT_RANGE_LIMIT = {
@@ -55,6 +66,7 @@ export interface StoredAnnotation {
   context: AnnotationContext;
   createdAt: string;
   id: string;
+  note: string;
   pageKey: string;
   pageTitle: string;
   pageUrl: string;
@@ -87,6 +99,11 @@ export type ContentRequest =
   | {
       type: 'DELETE_ANNOTATION';
       id: string;
+    }
+  | {
+      type: 'UPDATE_ANNOTATION_NOTE';
+      id: string;
+      note: string;
     }
   | {
       type: 'GET_STATE';
@@ -130,6 +147,18 @@ export type DeleteAnnotationResponse =
       state: ExtensionState;
     };
 
+export type UpdateAnnotationNoteResponse =
+  | {
+      annotation: StoredAnnotation;
+      ok: true;
+      state: ExtensionState;
+    }
+  | {
+      ok: false;
+      reason: string;
+      state: ExtensionState;
+    };
+
 export type UpdateSettingsResponse = {
   ok: true;
   state: ExtensionState;
@@ -139,6 +168,7 @@ export type ContentResponse =
   | AnnotateSelectionResponse
   | ArticleTextResponse
   | DeleteAnnotationResponse
+  | UpdateAnnotationNoteResponse
   | UpdateSettingsResponse
   | ExtensionState;
 
@@ -163,6 +193,12 @@ export function normalizeUserSettings(value: unknown): UserSettings {
 
 export function normalizeAnnotationStyle(value: unknown): AnnotationStyleId {
   return isAnnotationStyleId(value) ? value : DEFAULT_ANNOTATION_STYLE;
+}
+
+export function normalizeAnnotationNote(value: unknown): string {
+  return typeof value === 'string'
+    ? value.replace(/\r\n?/g, '\n').trim().slice(0, ANNOTATION_NOTE_LIMIT)
+    : '';
 }
 
 export function normalizeContextSettings(value: unknown): ContextSettings {

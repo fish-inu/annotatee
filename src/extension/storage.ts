@@ -1,5 +1,6 @@
 import {
   DEFAULT_USER_SETTINGS,
+  normalizeAnnotationNote,
   normalizeAnnotationStyle,
   normalizeUserSettings,
   type StoredAnnotation,
@@ -136,6 +137,7 @@ function normalizeAnnotations(value: unknown): StoredAnnotation[] {
 function normalizeStoredAnnotation(annotation: StoredAnnotation): StoredAnnotation {
   return {
     ...annotation,
+    note: normalizeAnnotationNote(annotation.note),
     style: normalizeAnnotationStyle(annotation.style)
   };
 }

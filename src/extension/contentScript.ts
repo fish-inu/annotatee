@@ -12,6 +12,7 @@ import {
   ANNOTATION_STYLE_IDS,
   DEFAULT_ANNOTATION_STYLE,
   DEFAULT_USER_SETTINGS,
+  normalizeAnnotationNote,
   normalizeAnnotationStyle,
   type AnnotationStyleId,
   type AnnotateSelectionResponse,
@@ -20,6 +21,7 @@ import {
   type DeleteAnnotationResponse,
   type ExtensionState,
   type StoredAnnotation,
+  type UpdateAnnotationNoteResponse,
   type UpdateSettingsResponse,
   type UserSettings
 } from './types';
@@ -39,16 +41,27 @@ interface SelectionSnapshot {
 }
 
 const ARTICLE_ROOT_CLASS = 'annotatee-article-root';
+const ARTICLE_DETECTION_RETRY_DELAYS = [0, 250, 1000, 2500, 5000];
 const EMPTY_STATE_REASON = 'No readable article area detected on this page.';
 const ANNOTATION_STYLE_PROPERTY = 'annotateeStyle';
-const ANNOTATION_STYLE_PRESETS: Record<
-  AnnotationStyleId,
-  {
-    highlight: HighlightStyle;
-    label: string;
-    swatch: string;
-  }
-> = {
+
+type AnnotationStylePreview =
+  | 'dashed-line'
+  | 'dotted-line'
+  | 'double-line'
+  | 'fill'
+  | 'soft-fill'
+  | 'solid-line';
+
+interface AnnotationStylePreset {
+  highlight: HighlightStyle;
+  label: string;
+  lineColor: string;
+  preview: AnnotationStylePreview;
+  swatch: string;
+}
+
+const ANNOTATION_STYLE_PRESETS: Record<AnnotationStyleId, AnnotationStylePreset> = {
   blue: {
     highlight: {
       fill: '#93c5fd',
@@ -56,8 +69,49 @@ const ANNOTATION_STYLE_PRESETS: Record<
       underlineColor: '#2563eb',
       underlineThickness: 2
     },
-    label: 'Blue',
+    label: 'Blue highlight',
+    lineColor: '#2563eb',
+    preview: 'fill',
     swatch: '#60a5fa'
+  },
+  dashed: {
+    highlight: {
+      fill: 'transparent',
+      fillOpacity: 0,
+      underlineColor: '#b45309',
+      underlineStyle: 'dashed',
+      underlineThickness: 3
+    },
+    label: 'Dashed underline',
+    lineColor: '#b45309',
+    preview: 'dashed-line',
+    swatch: '#f59e0b'
+  },
+  dotted: {
+    highlight: {
+      fill: 'transparent',
+      fillOpacity: 0,
+      underlineColor: '#0f766e',
+      underlineStyle: 'dotted',
+      underlineThickness: 3
+    },
+    label: 'Dotted underline',
+    lineColor: '#0f766e',
+    preview: 'dotted-line',
+    swatch: '#14b8a6'
+  },
+  double: {
+    highlight: {
+      fill: 'transparent',
+      fillOpacity: 0,
+      underlineColor: '#334155',
+      underlineStyle: 'double',
+      underlineThickness: 4
+    },
+    label: 'Double underline',
+    lineColor: '#334155',
+    preview: 'double-line',
+    swatch: '#64748b'
   },
   green: {
     highlight: {
@@ -66,8 +120,22 @@ const ANNOTATION_STYLE_PRESETS: Record<
       underlineColor: '#15803d',
       underlineThickness: 2
     },
-    label: 'Green',
+    label: 'Green highlight',
+    lineColor: '#15803d',
+    preview: 'fill',
     swatch: '#4ade80'
+  },
+  lowlight: {
+    highlight: {
+      fill: '#cbd5e1',
+      fillOpacity: 0.28,
+      underlineColor: '#64748b',
+      underlineThickness: 1
+    },
+    label: 'Soft lowlight',
+    lineColor: '#64748b',
+    preview: 'soft-fill',
+    swatch: '#cbd5e1'
   },
   pink: {
     highlight: {
@@ -76,7 +144,9 @@ const ANNOTATION_STYLE_PRESETS: Record<
       underlineColor: '#be185d',
       underlineThickness: 2
     },
-    label: 'Pink',
+    label: 'Pink highlight',
+    lineColor: '#be185d',
+    preview: 'fill',
     swatch: '#f472b6'
   },
   underline: {
@@ -87,6 +157,8 @@ const ANNOTATION_STYLE_PRESETS: Record<
       underlineThickness: 3
     },
     label: 'Underline',
+    lineColor: '#7c3aed',
+    preview: 'solid-line',
     swatch: '#8b5cf6'
   },
   yellow: {
@@ -96,7 +168,9 @@ const ANNOTATION_STYLE_PRESETS: Record<
       underlineColor: '#946200',
       underlineThickness: 2
     },
-    label: 'Yellow',
+    label: 'Yellow highlight',
+    lineColor: '#946200',
+    preview: 'fill',
     swatch: '#f4c84a'
   }
 };
@@ -107,13 +181,19 @@ class ArticleAnnotationController {
   private annotator: TextAnnotator<TextAnnotation> | null = null;
   private activePopoverId: string | null = null;
   private activeSelection: SelectionSnapshot | null = null;
+  private articleDetectionPromise: Promise<void> | null = null;
+  private articleSetupPromise: Promise<boolean> | null = null;
+  private dismissHandlersBound = false;
   private lastSelection: SelectionSnapshot | null = null;
   private popover: HTMLElement | null = null;
   private popoverActionButton: HTMLButtonElement | null = null;
+  private popoverDeleteButton: HTMLButtonElement | null = null;
+  private popoverNoteInput: HTMLTextAreaElement | null = null;
   private popoverQuote: HTMLElement | null = null;
   private popoverStyleButtons: HTMLButtonElement[] = [];
   private popoverStylePicker: HTMLElement | null = null;
   private selectedStyle: AnnotationStyleId = DEFAULT_ANNOTATION_STYLE;
+  private selectionCaptureBound = false;
   private settings: UserSettings = DEFAULT_USER_SETTINGS;
   private toast: HTMLElement | null = null;
   private toastTimer = 0;
@@ -121,26 +201,8 @@ class ArticleAnnotationController {
   async start() {
     this.bindMessages();
     this.settings = await getUserSettings();
-    this.articleTarget = detectReadableArticle();
-
-    if (!this.articleTarget) {
-      return;
-    }
-
-    this.articleTarget.root.classList.add(ARTICLE_ROOT_CLASS);
-    this.annotator = createTextAnnotator<TextAnnotation, TextAnnotation>(this.articleTarget.root, {
-      annotatingEnabled: false,
-      renderer: 'SPANS',
-      style: getAnnotationHighlightStyle,
-      userSelectAction: UserSelectAction.SELECT
-    });
-    this.annotator.on('clickAnnotation', (annotation, event) => {
-      this.showPopover(annotation, event);
-    });
-
-    await this.loadPageAnnotations();
-    this.bindSelectionCapture();
-    this.bindDismissHandlers();
+    this.articleDetectionPromise = this.detectArticleWithRetries();
+    await this.articleDetectionPromise;
   }
 
   private bindMessages() {
@@ -157,8 +219,17 @@ class ArticleAnnotationController {
   private async handleMessage(
     message: ContentRequest
   ): Promise<
-    AnnotateSelectionResponse | ArticleTextResponse | DeleteAnnotationResponse | ExtensionState | UpdateSettingsResponse
+    | AnnotateSelectionResponse
+    | ArticleTextResponse
+    | DeleteAnnotationResponse
+    | ExtensionState
+    | UpdateAnnotationNoteResponse
+    | UpdateSettingsResponse
   > {
+    if (!this.articleTarget) {
+      await this.trySetupArticleTarget();
+    }
+
     if (message.type === 'GET_STATE') {
       return this.getState();
     }
@@ -175,7 +246,75 @@ class ArticleAnnotationController {
       return this.deleteAnnotation(message.id);
     }
 
+    if (message.type === 'UPDATE_ANNOTATION_NOTE') {
+      return this.updateAnnotationNote(message.id, message.note);
+    }
+
     return this.annotateCurrentSelection(message.selectionText);
+  }
+
+  private async detectArticleWithRetries() {
+    for (const delay of ARTICLE_DETECTION_RETRY_DELAYS) {
+      if (delay > 0) {
+        await wait(delay);
+      }
+
+      if (await this.trySetupArticleTarget()) {
+        return;
+      }
+    }
+  }
+
+  private async trySetupArticleTarget(): Promise<boolean> {
+    if (this.articleTarget && this.annotator) {
+      return true;
+    }
+
+    if (this.articleSetupPromise) {
+      return this.articleSetupPromise;
+    }
+
+    this.articleSetupPromise = this.setupDetectedArticleTarget().finally(() => {
+      this.articleSetupPromise = null;
+    });
+
+    return this.articleSetupPromise;
+  }
+
+  private async setupDetectedArticleTarget(): Promise<boolean> {
+    const articleTarget = detectReadableArticle();
+
+    if (!articleTarget) {
+      return false;
+    }
+
+    this.articleTarget = articleTarget;
+    this.articleTarget.root.classList.add(ARTICLE_ROOT_CLASS);
+    this.annotator = createTextAnnotator<TextAnnotation, TextAnnotation>(this.articleTarget.root, {
+      annotatingEnabled: false,
+      renderer: 'SPANS',
+      style: getAnnotationHighlightStyle,
+      userSelectAction: UserSelectAction.SELECT
+    });
+    this.annotator.on('clickAnnotation', (annotation, event) => {
+      this.showPopover(annotation, event);
+    });
+
+    await this.loadPageAnnotations();
+
+    if (!this.selectionCaptureBound) {
+      this.bindSelectionCapture();
+      this.selectionCaptureBound = true;
+    }
+
+    if (!this.dismissHandlersBound) {
+      this.bindDismissHandlers();
+      this.dismissHandlersBound = true;
+    }
+
+    this.notifyStateChanged();
+
+    return true;
   }
 
   private async loadPageAnnotations() {
@@ -259,7 +398,8 @@ class ArticleAnnotationController {
 
   private async annotateSnapshot(
     snapshot: SelectionSnapshot,
-    menuSelectionText?: string
+    menuSelectionText?: string,
+    note = ''
   ): Promise<AnnotateSelectionResponse> {
     if (!this.articleTarget || !this.annotator) {
       return this.failedAnnotation(EMPTY_STATE_REASON);
@@ -288,7 +428,7 @@ class ArticleAnnotationController {
       };
     }
 
-    const annotation = this.createStoredAnnotation(snapshot);
+    const annotation = this.createStoredAnnotation(snapshot, note);
     this.annotator.addAnnotation(toTextAnnotation(annotation));
 
     if (!this.annotator.getAnnotationById(annotation.id)) {
@@ -313,7 +453,7 @@ class ArticleAnnotationController {
     };
   }
 
-  private createStoredAnnotation(snapshot: SelectionSnapshot): StoredAnnotation {
+  private createStoredAnnotation(snapshot: SelectionSnapshot, note: string): StoredAnnotation {
     const target = this.requireArticleTarget();
     const now = new Date().toISOString();
     const span: TextSpan = {
@@ -326,6 +466,7 @@ class ArticleAnnotationController {
       context: getContext(this.getSourceText(), span, this.settings.context),
       createdAt: now,
       id: crypto.randomUUID(),
+      note: normalizeAnnotationNote(note),
       pageKey: target.metadata.pageKey,
       pageTitle: target.metadata.articleTitle,
       pageUrl: target.metadata.pageUrl,
@@ -358,6 +499,41 @@ class ArticleAnnotationController {
     this.notifyStateChanged();
 
     return {
+      ok: true,
+      state: this.getState()
+    };
+  }
+
+  private async updateAnnotationNote(
+    id: string,
+    note: string
+  ): Promise<UpdateAnnotationNoteResponse> {
+    const annotation = this.findStoredAnnotation(id);
+
+    if (!annotation) {
+      return {
+        ok: false,
+        reason: 'Annotation not found.',
+        state: this.getState()
+      };
+    }
+
+    const nextAnnotation: StoredAnnotation = {
+      ...annotation,
+      note: normalizeAnnotationNote(note),
+      updatedAt: new Date().toISOString()
+    };
+
+    await upsertStoredAnnotation(nextAnnotation);
+    this.annotations = this.annotations.map((candidate) =>
+      candidate.id === id ? nextAnnotation : candidate
+    );
+    this.hidePopover();
+    this.showToast('Note saved');
+    this.notifyStateChanged();
+
+    return {
+      annotation: nextAnnotation,
       ok: true,
       state: this.getState()
     };
@@ -453,8 +629,13 @@ class ArticleAnnotationController {
     return root.contains(range.startContainer) && root.contains(range.endContainer);
   }
 
+  private findStoredAnnotation(id: string): StoredAnnotation | undefined {
+    return this.annotations.find((annotation) => annotation.id === id);
+  }
+
   private showPopover(annotation: TextAnnotation, event: PointerEvent) {
     const popover = this.ensurePopover();
+    const storedAnnotation = this.findStoredAnnotation(annotation.id);
     const quote = annotation.target.selector[0]?.quote ?? 'Annotation';
     const rect = getAnnotationRect(annotation) ?? pointToRect(event.clientX, event.clientY);
 
@@ -465,7 +646,8 @@ class ArticleAnnotationController {
       this.popoverQuote.textContent = quote.trim();
     }
 
-    this.configurePopoverAction('delete');
+    this.setPopoverNote(storedAnnotation?.note ?? '');
+    this.configurePopoverAction('save');
     popover.hidden = false;
     this.positionPopover(rect);
   }
@@ -491,6 +673,7 @@ class ArticleAnnotationController {
       this.popoverQuote.textContent = snapshot.quote.trim();
     }
 
+    this.setPopoverNote('');
     this.configurePopoverAction('annotate');
     this.updateStylePickerButtons();
     popover.hidden = false;
@@ -534,6 +717,26 @@ class ArticleAnnotationController {
       void this.handlePopoverAction();
     });
 
+    const deleteButton = document.createElement('button');
+    deleteButton.className = 'annotatee-popover__button annotatee-popover__button--delete';
+    deleteButton.type = 'button';
+    deleteButton.title = 'Delete annotation';
+    deleteButton.setAttribute('aria-label', 'Delete annotation');
+    deleteButton.appendChild(createTrashIcon());
+    deleteButton.addEventListener('click', () => {
+      void this.handlePopoverDelete();
+    });
+
+    const actions = document.createElement('div');
+    actions.className = 'annotatee-popover__actions';
+    actions.append(actionButton, deleteButton);
+
+    const noteInput = document.createElement('textarea');
+    noteInput.className = 'annotatee-popover__note';
+    noteInput.placeholder = 'Add note';
+    noteInput.rows = 3;
+    noteInput.setAttribute('aria-label', 'Annotation note');
+
     const stylePicker = document.createElement('div');
     stylePicker.className = 'annotatee-popover__styles';
     stylePicker.setAttribute('aria-label', 'Annotation style');
@@ -546,6 +749,8 @@ class ArticleAnnotationController {
       button.title = preset.label;
       button.setAttribute('aria-label', preset.label);
       button.dataset.styleId = styleId;
+      button.dataset.stylePreview = preset.preview;
+      button.style.setProperty('--annotatee-line-color', preset.lineColor);
       button.style.setProperty('--annotatee-style-color', preset.swatch);
       button.addEventListener('click', () => {
         this.selectAnnotationStyle(styleId);
@@ -555,17 +760,19 @@ class ArticleAnnotationController {
       return button;
     });
 
-    popover.append(quote, actionButton, stylePicker);
+    popover.append(quote, actions, noteInput, stylePicker);
     document.body.appendChild(popover);
     this.popover = popover;
     this.popoverActionButton = actionButton;
+    this.popoverDeleteButton = deleteButton;
+    this.popoverNoteInput = noteInput;
     this.popoverQuote = quote;
     this.popoverStylePicker = stylePicker;
 
     return popover;
   }
 
-  private configurePopoverAction(action: 'annotate' | 'delete') {
+  private configurePopoverAction(action: 'annotate' | 'save') {
     const button = this.popoverActionButton;
 
     if (!button) {
@@ -580,14 +787,16 @@ class ArticleAnnotationController {
       button.setAttribute('aria-label', 'Annotate selection');
       button.textContent = 'Annotate';
       this.showStylePicker();
+      this.setDeleteButtonVisible(false);
       return;
     }
 
-    button.className = 'annotatee-popover__button annotatee-popover__button--delete';
-    button.title = 'Delete annotation';
-    button.setAttribute('aria-label', 'Delete annotation');
-    button.appendChild(createTrashIcon());
+    button.className = 'annotatee-popover__button annotatee-popover__button--save';
+    button.title = 'Save note';
+    button.setAttribute('aria-label', 'Save note');
+    button.textContent = 'Save';
     this.hideStylePicker();
+    this.setDeleteButtonVisible(true);
   }
 
   private selectAnnotationStyle(styleId: AnnotationStyleId) {
@@ -607,6 +816,12 @@ class ArticleAnnotationController {
     }
   }
 
+  private setDeleteButtonVisible(visible: boolean) {
+    if (this.popoverDeleteButton) {
+      this.popoverDeleteButton.hidden = !visible;
+    }
+  }
+
   private updateStylePickerButtons() {
     this.popoverStyleButtons.forEach((button) => {
       const isSelected = button.dataset.styleId === this.selectedStyle;
@@ -617,12 +832,28 @@ class ArticleAnnotationController {
 
   private async handlePopoverAction() {
     if (this.activeSelection) {
-      await this.annotateSnapshot(this.activeSelection);
+      await this.annotateSnapshot(this.activeSelection, undefined, this.readPopoverNote());
       return;
     }
 
     if (this.activePopoverId) {
+      await this.updateAnnotationNote(this.activePopoverId, this.readPopoverNote());
+    }
+  }
+
+  private async handlePopoverDelete() {
+    if (this.activePopoverId) {
       await this.deleteAnnotation(this.activePopoverId);
+    }
+  }
+
+  private readPopoverNote(): string {
+    return normalizeAnnotationNote(this.popoverNoteInput?.value ?? '');
+  }
+
+  private setPopoverNote(note: string) {
+    if (this.popoverNoteInput) {
+      this.popoverNoteInput.value = normalizeAnnotationNote(note);
     }
   }
 
@@ -800,6 +1031,12 @@ function getBoundsRect(rects: DOMRect[]): DOMRect | null {
 
 function pointToRect(x: number, y: number): DOMRect {
   return new DOMRect(x, y, 1, 1);
+}
+
+function wait(delay: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delay);
+  });
 }
 
 function createTrashIcon(): SVGSVGElement {

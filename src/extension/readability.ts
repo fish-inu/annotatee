@@ -16,7 +16,9 @@ export interface ReadableArticleTarget {
 }
 
 const MIN_ARTICLE_LENGTH = 420;
+const MIN_FALLBACK_ARTICLE_LENGTH = 900;
 const MIN_ROOT_SCORE = 0.46;
+const MIN_FALLBACK_ROOT_SCORE = 0.38;
 const CANDIDATE_SELECTOR = [
   'article',
   'main',
@@ -32,6 +34,8 @@ const CANDIDATE_SELECTOR = [
   'section',
   'div'
 ].join(',');
+const UNLIKELY_ARTICLE_ROOT_PATTERN =
+  /\b(ad|advert|banner|comment|footer|header|menu|nav|newsletter|promo|recommend|related|share|sidebar|sponsor|subscribe)\b/;
 
 export function detectReadableArticle(): ReadableArticleTarget | null {
   if (!document.body) {
@@ -40,34 +44,39 @@ export function detectReadableArticle(): ReadableArticleTarget | null {
 
   const clone = document.cloneNode(true) as Document;
   const readerable = safelyCheckReaderable(clone);
-  const parsed = new Readability(clone).parse();
+  const parsed = safelyParseArticle(clone);
   const parsedText = normalizeText(parsed?.textContent ?? '');
 
-  if (!parsed || parsedText.length < MIN_ARTICLE_LENGTH) {
-    return null;
-  }
-
-  const root = findBestArticleRoot(parsedText);
+  const root =
+    parsedText.length >= MIN_ARTICLE_LENGTH
+      ? findBestArticleRoot(parsedText) ?? findBestSemanticArticleRoot()
+      : findBestSemanticArticleRoot();
 
   if (!root) {
     return null;
   }
 
-  const pageUrl = getCanonicalPageUrl();
   const sourceText = root.textContent ?? '';
+  const fallbackText = normalizeText(sourceText);
+
+  if (parsedText.length < MIN_ARTICLE_LENGTH && fallbackText.length < MIN_ARTICLE_LENGTH) {
+    return null;
+  }
+
+  const pageUrl = getCanonicalPageUrl();
 
   return {
     root,
     sourceText,
     metadata: {
       areaLabel: getAreaLabel(root),
-      articleTitle: parsed.title || document.title || 'Untitled article',
-      excerpt: parsed.excerpt || undefined,
+      articleTitle: parsed?.title || getHeadingText(root) || document.title || 'Untitled article',
+      excerpt: parsed?.excerpt || getMetaDescription() || undefined,
       pageKey: getPageKey(pageUrl),
-      pageTitle: document.title || parsed.title || 'Untitled page',
+      pageTitle: document.title || parsed?.title || 'Untitled page',
       pageUrl,
       readerable,
-      siteName: parsed.siteName || undefined
+      siteName: parsed?.siteName || undefined
     }
   };
 }
@@ -90,6 +99,21 @@ function findBestArticleRoot(parsedText: string): HTMLElement | null {
   return best.element;
 }
 
+function findBestSemanticArticleRoot(): HTMLElement | null {
+  const scored = Array.from(document.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR))
+    .map(scoreSemanticArticleRoot)
+    .filter((score): score is CandidateScore => score !== null)
+    .sort(compareCandidates);
+
+  const best = scored[0];
+
+  if (!best || best.score < MIN_FALLBACK_ROOT_SCORE || best.element === document.body) {
+    return null;
+  }
+
+  return best.element;
+}
+
 function collectCandidates(articleLength: number): HTMLElement[] {
   const candidates = new Set<HTMLElement>();
 
@@ -100,6 +124,38 @@ function collectCandidates(articleLength: number): HTMLElement[] {
   });
 
   return Array.from(candidates);
+}
+
+function scoreSemanticArticleRoot(element: HTMLElement): CandidateScore | null {
+  if (isInNonArticleChrome(element) || !isVisible(element) || isUnlikelyArticleRoot(element)) {
+    return null;
+  }
+
+  const candidateText = normalizeText(getElementText(element));
+  const textLength = candidateText.length;
+
+  if (textLength < MIN_FALLBACK_ARTICLE_LENGTH || getLinkTextRatio(element, textLength) >= 0.35) {
+    return null;
+  }
+
+  const semanticBoost = getSemanticBoost(element);
+
+  if (semanticBoost === 0) {
+    return null;
+  }
+
+  const paragraphScore = getReadableParagraphScore(element);
+  const headingBoost = element.querySelector('h1, h2') ? 0.08 : 0;
+  const lengthRatio = Math.min(textLength / 6000, 1);
+  const linkPenalty = getLinkTextRatio(element, textLength) * 0.35;
+  const score = semanticBoost + lengthRatio * 0.24 + paragraphScore * 0.28 + headingBoost - linkPenalty;
+
+  return {
+    element,
+    lengthRatio,
+    score,
+    tokenCoverage: 0
+  };
 }
 
 function isUsableCandidate(element: HTMLElement, articleLength: number): boolean {
@@ -116,6 +172,12 @@ function isUsableCandidate(element: HTMLElement, articleLength: number): boolean
   }
 
   return getLinkTextRatio(element, textLength) < 0.48;
+}
+
+function isUnlikelyArticleRoot(element: HTMLElement): boolean {
+  const signature = `${element.tagName.toLowerCase()} ${element.id} ${element.className}`.toLowerCase();
+
+  return UNLIKELY_ARTICLE_ROOT_PATTERN.test(signature);
 }
 
 function scoreCandidate(
@@ -213,6 +275,14 @@ function getSemanticBoost(element: HTMLElement): number {
   return 0;
 }
 
+function getReadableParagraphScore(element: HTMLElement): number {
+  const readableParagraphCount = Array.from(element.querySelectorAll('p')).filter(
+    (paragraph) => normalizeText(paragraph.textContent ?? '').length >= 80
+  ).length;
+
+  return Math.min(readableParagraphCount / 8, 1);
+}
+
 function getLinkTextRatio(element: HTMLElement, textLength: number): number {
   if (textLength === 0) {
     return 1;
@@ -261,6 +331,18 @@ function getAreaLabel(element: HTMLElement): string {
   return className ? `${element.tagName.toLowerCase()}.${className}` : element.tagName.toLowerCase();
 }
 
+function getHeadingText(element: HTMLElement): string | undefined {
+  return normalizeText(element.querySelector('h1, h2')?.textContent ?? '') || undefined;
+}
+
+function getMetaDescription(): string | undefined {
+  return (
+    document.querySelector<HTMLMetaElement>('meta[name="description"]')?.content ||
+    document.querySelector<HTMLMetaElement>('meta[property="og:description"]')?.content ||
+    undefined
+  );
+}
+
 function getElementText(element: HTMLElement): string {
   return element.innerText || element.textContent || '';
 }
@@ -274,5 +356,13 @@ function safelyCheckReaderable(doc: Document): boolean {
     return isProbablyReaderable(doc);
   } catch {
     return false;
+  }
+}
+
+function safelyParseArticle(doc: Document) {
+  try {
+    return new Readability(doc).parse();
+  } catch {
+    return null;
   }
 }

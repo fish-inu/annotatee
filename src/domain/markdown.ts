@@ -13,12 +13,7 @@ export function formatAnnotationsAsMarkdown(
     records.length === 0
       ? '# Annotations\n\nNo annotations yet.'
       : records
-          .flatMap((record) => [
-            `## ${escapeMarkdownHeading(record.span.text)}`,
-            '',
-            '> ' + record.context.text.replace(/\n+/g, '\n> '),
-            ''
-          ])
+          .flatMap((record) => formatAnnotationRecord(record))
           .join('\n');
   const articleText = options.articleText?.trim();
   const customText = options.customText?.trim();
@@ -29,6 +24,22 @@ export function formatAnnotationsAsMarkdown(
   }
 
   return segments.join('\n\n');
+}
+
+function formatAnnotationRecord(record: AnnotationRecord): string[] {
+  const lines = [
+    `## ${escapeMarkdownHeading(record.span.text)}`,
+    '',
+    '> ' + record.context.text.replace(/\n+/g, '\n> '),
+    ''
+  ];
+  const note = record.note?.trim();
+
+  if (note) {
+    lines.push('**Note**', '', note, '');
+  }
+
+  return lines;
 }
 
 function escapeMarkdownHeading(value: string): string {

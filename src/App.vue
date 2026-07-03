@@ -10,6 +10,7 @@ import type {
   DeleteAnnotationResponse,
   ExtensionState,
   StoredAnnotation,
+  UpdateAnnotationNoteResponse,
   UpdateSettingsResponse,
   UserSettings
 } from './extension/types';
@@ -41,6 +42,7 @@ const records = computed<AnnotationRecord[]>(() =>
     context: annotation.context,
     createdAt: annotation.createdAt,
     id: annotation.id,
+    note: annotation.note,
     span: annotation.span,
     updatedAt: annotation.updatedAt
   }))
@@ -109,6 +111,19 @@ async function deleteAnnotation(annotation: StoredAnnotation) {
   const response = await sendMessageToActiveTab<DeleteAnnotationResponse>({
     id: annotation.id,
     type: 'DELETE_ANNOTATION'
+  });
+
+  if (response?.ok) {
+    applyExtensionState(response.state);
+  }
+}
+
+async function updateAnnotationNote(annotation: StoredAnnotation, event: Event) {
+  const note = (event.target as HTMLTextAreaElement).value;
+  const response = await sendMessageToActiveTab<UpdateAnnotationNoteResponse>({
+    id: annotation.id,
+    note,
+    type: 'UPDATE_ANNOTATION_NOTE'
   });
 
   if (response?.ok) {
@@ -391,6 +406,14 @@ function hasChromeRuntime(): boolean {
         <div>
           <p class="quote">{{ annotation.span.text }}</p>
           <p class="context">{{ annotation.context.text }}</p>
+          <label class="annotation-note">
+            <span>Note</span>
+            <textarea
+              rows="2"
+              :value="annotation.note"
+              @change="updateAnnotationNote(annotation, $event)"
+            ></textarea>
+          </label>
         </div>
         <button
           class="delete-button"
