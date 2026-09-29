@@ -6,7 +6,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vue-tsc --noEmit && vite build && npm run build:extension-scripts",
     "build:extension-scripts": "rolldown --config rolldown.config.mjs",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test:unit": "node --experimental-strip-types --test tests/markdown.test.mjs tests/settings.test.mjs"
   },
   "keywords": [
     "annotation",

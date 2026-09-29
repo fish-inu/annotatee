@@ -1,19 +1,100 @@
 import type { AnnotationRecord } from './annotationContext';
 
-interface MarkdownOptions {
-  customText?: string;
+export const ANNOTATION_MARKDOWN_FORMATS = ['list', 'table'] as const;
+export type AnnotationMarkdownFormat = (typeof ANNOTATION_MARKDOWN_FORMATS)[number];
+
+export interface AnnotationMarkdownRenderOptions {
+  includeContext?: boolean;
 }
 
+export interface AnnotationMarkdownOptions extends AnnotationMarkdownRenderOptions {
+  customText?: string;
+  format?: AnnotationMarkdownFormat;
+}
+
+export interface AnnotationMarkdownFormatter {
+  readonly id: AnnotationMarkdownFormat;
+  render(
+    records: readonly AnnotationRecord[],
+    options: AnnotationMarkdownRenderOptions
+  ): string;
+}
+
+export type AnnotationMarkdownFormatterRegistry = ReadonlyMap<
+  AnnotationMarkdownFormat,
+  AnnotationMarkdownFormatter
+>;
+
+export function createAnnotationMarkdownFormatterRegistry(
+  formatters: readonly AnnotationMarkdownFormatter[]
+): AnnotationMarkdownFormatterRegistry {
+  const registry = new Map<AnnotationMarkdownFormat, AnnotationMarkdownFormatter>();
+
+  for (const formatter of formatters) {
+    if (registry.has(formatter.id)) {
+      throw new Error('Only one Markdown formatter can be registered for each format.');
+    }
+
+    registry.set(formatter.id, formatter);
+  }
+
+  return registry;
+}
+
+export const annotationListMarkdownFormatter: AnnotationMarkdownFormatter = {
+  id: 'list',
+  render(records) {
+    return records
+      .map((record) => '- ' + escapeMarkdownListItem(record.span.text))
+      .join('\n');
+  }
+};
+
+export const annotationTableMarkdownFormatter: AnnotationMarkdownFormatter = {
+  id: 'table',
+  render(records, options) {
+    const includeContext = options.includeContext ?? true;
+    const headers = includeContext ? ['Span', 'Context'] : ['Span'];
+    const divider = headers.map(() => '---');
+    const rows = records.map((record) => {
+      const cells = [record.span.text];
+
+      if (includeContext) {
+        cells.push(record.context.text);
+      }
+
+      return '| ' + cells.map(escapeMarkdownTableCell).join(' | ') + ' |';
+    });
+
+    return [
+      '| ' + headers.join(' | ') + ' |',
+      '| ' + divider.join(' | ') + ' |',
+      ...rows
+    ].join('\n');
+  }
+};
+
+export const DEFAULT_ANNOTATION_MARKDOWN_FORMATTERS =
+  createAnnotationMarkdownFormatterRegistry([
+    annotationListMarkdownFormatter,
+    annotationTableMarkdownFormatter
+  ]);
+
 export function formatAnnotationsAsMarkdown(
-  records: AnnotationRecord[],
-  options: MarkdownOptions = {}
+  records: readonly AnnotationRecord[],
+  options: AnnotationMarkdownOptions = {},
+  formatterRegistry: AnnotationMarkdownFormatterRegistry =
+    DEFAULT_ANNOTATION_MARKDOWN_FORMATTERS
 ): string {
+  const format = options.format ?? 'list';
+  const formatter = formatterRegistry.get(format);
+
+  if (!formatter) {
+    throw new Error('No Markdown formatter is registered for "' + format + '".');
+  }
+
   const annotations =
-    records.length === 0
-      ? '# Annotations\n\nNo annotations yet.'
-      : records
-          .flatMap((record) => formatAnnotationRecord(record))
-          .join('\n');
+    records.length === 0 ? 'No annotations yet.' : formatter.render(records, options);
   const customText = options.customText?.trim();
   const segments = [annotations];
 
@@ -24,22 +105,18 @@ export function formatAnnotationsAsMarkdown(
   return segments.join('\n\n');
 }
 
-function formatAnnotationRecord(record: AnnotationRecord): string[] {
-  const lines = [
-    `## ${escapeMarkdownHeading(record.span.text)}`,
-    '',
-    '> ' + record.context.text.replace(/\n+/g, '\n> '),
-    ''
-  ];
-  const note = record.note?.trim();
-
-  if (note) {
-    lines.push('**Note**', '', note, '');
-  }
-
-  return lines;
+function escapeMarkdownListItem(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/([\\*_{}\[\]()])/g, '\\$1');
 }
 
-function escapeMarkdownHeading(value: string): string {
-  return value.replace(/[#`*_{}[\]()]/g, '').trim().slice(0, 80) || 'Untitled span';
+function escapeMarkdownTableCell(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n/g, '<br>')
+    .replace(/\|/g, '\\|')
+    .trim();
 }

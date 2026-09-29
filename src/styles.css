@@ -192,6 +192,10 @@ h1 {
   gap: 10px;
 }
 
+.settings-grid--copy {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .field {
   display: grid;
   gap: 5px;
@@ -238,6 +242,32 @@ h1 {
   padding: 8px 9px;
   line-height: 1.35;
   resize: none;
+}
+
+.context-toggle {
+  display: flex;
+  align-items: center;
+  align-self: end;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 4px;
+  color: #53615c;
+  cursor: pointer;
+}
+
+.context-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #247f75;
+}
+
+.context-toggle span {
+  color: #53615c;
+  font-size: 0.74rem;
+  font-weight: 750;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .notice {

@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { AnnotationRecord, ContextMode } from './domain/annotationContext';
-import { formatAnnotationsAsMarkdown } from './domain/markdown';
+import {
+  ANNOTATION_MARKDOWN_FORMATS,
+  formatAnnotationsAsMarkdown,
+  type AnnotationMarkdownFormat
+} from './domain/markdown';
 import { isStateChangedMessage } from './extension/messages';
 import { getUserSettings, writeUserSettings } from './extension/storage';
 import type {
@@ -29,6 +33,14 @@ const CONTEXT_MODE_LABELS: Record<ContextMode, string> = {
 const contextModeOptions = CONTEXT_MODES.map((mode) => ({
   label: CONTEXT_MODE_LABELS[mode],
   value: mode
+}));
+const COPY_FORMAT_LABELS: Record<AnnotationMarkdownFormat, string> = {
+  list: 'List',
+  table: 'Table'
+};
+const copyFormatOptions = ANNOTATION_MARKDOWN_FORMATS.map((format) => ({
+  label: COPY_FORMAT_LABELS[format],
+  value: format
 }));
 const settings = ref<UserSettings>(normalizeUserSettings(DEFAULT_USER_SETTINGS));
 const state = ref<ExtensionState>(createUnavailableState(settings.value));
@@ -133,7 +145,9 @@ async function copyMarkdown() {
   try {
     await navigator.clipboard.writeText(
       formatAnnotationsAsMarkdown(records.value, {
-        customText: settings.value.copy.customText
+        customText: settings.value.copy.customText,
+        format: settings.value.copy.format,
+        includeContext: settings.value.copy.includeContext
       })
     );
     copyStatus.value = 'Copied';
@@ -186,6 +200,30 @@ function updateCustomText(event: Event) {
     settings: nextSettings
   };
   scheduleSettingsSave();
+}
+
+function updateCopyFormat(event: Event) {
+  const format = (event.target as HTMLSelectElement).value as AnnotationMarkdownFormat;
+
+  void applySettings({
+    ...settings.value,
+    copy: {
+      ...settings.value.copy,
+      format
+    }
+  });
+}
+
+function updateIncludeContext(event: Event) {
+  const includeContext = (event.target as HTMLInputElement).checked;
+
+  void applySettings({
+    ...settings.value,
+    copy: {
+      ...settings.value.copy,
+      includeContext
+    }
+  });
 }
 
 function scheduleSettingsSave() {
@@ -326,7 +364,7 @@ function hasChromeRuntime(): boolean {
 
       <div class="settings-grid">
         <label class="field">
-          <span>Context</span>
+          <span>Context mode</span>
           <select :value="settings.context.mode" @change="updateContextMode">
             <option
               v-for="option in contextModeOptions"
@@ -339,7 +377,7 @@ function hasChromeRuntime(): boolean {
         </label>
 
         <label class="field field--range">
-          <span>Range</span>
+          <span>Context range</span>
           <input
             type="number"
             inputmode="numeric"
@@ -348,6 +386,30 @@ function hasChromeRuntime(): boolean {
             :value="settings.context.range"
             @change="updateContextRange"
           />
+        </label>
+      </div>
+
+      <div class="settings-grid settings-grid--copy">
+        <label class="field">
+          <span>Copy format</span>
+          <select :value="settings.copy.format" @change="updateCopyFormat">
+            <option
+              v-for="option in copyFormatOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
+
+        <label v-if="settings.copy.format === 'table'" class="context-toggle">
+          <input
+            type="checkbox"
+            :checked="settings.copy.includeContext"
+            @change="updateIncludeContext"
+          />
+          <span>Include context</span>
         </label>
       </div>
     </section>
