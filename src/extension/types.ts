@@ -4,6 +4,10 @@ import type {
   ContextMode,
   TextSpan
 } from '../domain/annotationContext';
+import {
+  ANNOTATION_MARKDOWN_FORMATS,
+  type AnnotationMarkdownFormat
+} from '../domain/markdown.ts';
 
 export const ANNOTATION_STYLE_IDS = [
   'yellow',
@@ -35,6 +39,8 @@ export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
 
 export interface CopySettings {
   customText: string;
+  format: AnnotationMarkdownFormat;
+  includeContext: boolean;
 }
 
 export interface UserSettings {
@@ -45,7 +51,9 @@ export interface UserSettings {
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   context: DEFAULT_CONTEXT_SETTINGS,
   copy: {
-    customText: ''
+    customText: '',
+    format: 'list',
+    includeContext: true
   }
 };
 
@@ -162,12 +170,7 @@ export function normalizeUserSettings(value: unknown): UserSettings {
 
   return {
     context: normalizeContextSettings(record.context),
-    copy: {
-      customText:
-        typeof copy.customText === 'string'
-          ? copy.customText
-          : DEFAULT_USER_SETTINGS.copy.customText
-    }
+    copy: normalizeCopySettings(copy)
   };
 }
 
@@ -193,6 +196,31 @@ export function normalizeContextSettings(value: unknown): ContextSettings {
     mode,
     range: clamp(range, CONTEXT_RANGE_LIMIT.min, CONTEXT_RANGE_LIMIT.max)
   };
+}
+
+export function normalizeCopySettings(value: unknown): CopySettings {
+  const record = isRecord(value) ? value : {};
+
+  return {
+    customText:
+      typeof record.customText === 'string'
+        ? record.customText
+        : DEFAULT_USER_SETTINGS.copy.customText,
+    format: isAnnotationMarkdownFormat(record.format)
+      ? record.format
+      : DEFAULT_USER_SETTINGS.copy.format,
+    includeContext:
+      typeof record.includeContext === 'boolean'
+        ? record.includeContext
+        : DEFAULT_USER_SETTINGS.copy.includeContext
+  };
+}
+
+function isAnnotationMarkdownFormat(value: unknown): value is AnnotationMarkdownFormat {
+  return (
+    typeof value === 'string' &&
+    ANNOTATION_MARKDOWN_FORMATS.includes(value as AnnotationMarkdownFormat)
+  );
 }
 
 function isAnnotationStyleId(value: unknown): value is AnnotationStyleId {
