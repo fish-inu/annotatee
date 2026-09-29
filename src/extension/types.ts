@@ -35,7 +35,6 @@ export const DEFAULT_CONTEXT_SETTINGS: ContextSettings = {
 
 export interface CopySettings {
   customText: string;
-  includeArticleText: boolean;
 }
 
 export interface UserSettings {
@@ -46,8 +45,7 @@ export interface UserSettings {
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   context: DEFAULT_CONTEXT_SETTINGS,
   copy: {
-    customText: '',
-    includeArticleText: false
+    customText: ''
   }
 };
 
@@ -90,9 +88,6 @@ export type ContentRequest =
       selectionText?: string;
     }
   | {
-      type: 'GET_ARTICLE_TEXT';
-    }
-  | {
       type: 'UPDATE_SETTINGS';
       settings: UserSettings;
     }
@@ -126,16 +121,6 @@ export type AnnotateSelectionResponse =
       state: ExtensionState;
     };
 
-export type ArticleTextResponse =
-  | {
-      articleText: string;
-      ok: true;
-    }
-  | {
-      ok: false;
-      reason: string;
-    };
-
 export type DeleteAnnotationResponse =
   | {
       ok: true;
@@ -166,7 +151,6 @@ export type UpdateSettingsResponse = {
 
 export type ContentResponse =
   | AnnotateSelectionResponse
-  | ArticleTextResponse
   | DeleteAnnotationResponse
   | UpdateAnnotationNoteResponse
   | UpdateSettingsResponse
@@ -182,11 +166,7 @@ export function normalizeUserSettings(value: unknown): UserSettings {
       customText:
         typeof copy.customText === 'string'
           ? copy.customText
-          : DEFAULT_USER_SETTINGS.copy.customText,
-      includeArticleText:
-        typeof copy.includeArticleText === 'boolean'
-          ? copy.includeArticleText
-          : DEFAULT_USER_SETTINGS.copy.includeArticleText
+          : DEFAULT_USER_SETTINGS.copy.customText
     }
   };
 }

@@ -1,7 +1,6 @@
 import type { AnnotationRecord } from './annotationContext';
 
 interface MarkdownOptions {
-  articleText?: string;
   customText?: string;
 }
 
@@ -15,9 +14,8 @@ export function formatAnnotationsAsMarkdown(
       : records
           .flatMap((record) => formatAnnotationRecord(record))
           .join('\n');
-  const articleText = options.articleText?.trim();
   const customText = options.customText?.trim();
-  const segments = articleText ? [articleText, annotations] : [annotations];
+  const segments = [annotations];
 
   if (customText) {
     segments.push(customText);

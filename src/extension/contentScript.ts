@@ -16,7 +16,6 @@ import {
   normalizeAnnotationStyle,
   type AnnotationStyleId,
   type AnnotateSelectionResponse,
-  type ArticleTextResponse,
   type ContentRequest,
   type DeleteAnnotationResponse,
   type ExtensionState,
@@ -220,7 +219,6 @@ class ArticleAnnotationController {
     message: ContentRequest
   ): Promise<
     | AnnotateSelectionResponse
-    | ArticleTextResponse
     | DeleteAnnotationResponse
     | ExtensionState
     | UpdateAnnotationNoteResponse
@@ -232,10 +230,6 @@ class ArticleAnnotationController {
 
     if (message.type === 'GET_STATE') {
       return this.getState();
-    }
-
-    if (message.type === 'GET_ARTICLE_TEXT') {
-      return this.getArticleText();
     }
 
     if (message.type === 'UPDATE_SETTINGS') {
@@ -536,20 +530,6 @@ class ArticleAnnotationController {
       annotation: nextAnnotation,
       ok: true,
       state: this.getState()
-    };
-  }
-
-  private getArticleText(): ArticleTextResponse {
-    if (!this.articleTarget) {
-      return {
-        ok: false,
-        reason: EMPTY_STATE_REASON
-      };
-    }
-
-    return {
-      articleText: this.getSourceText().trim(),
-      ok: true
     };
   }
 

@@ -15,7 +15,6 @@ export function isContentRequest(message: unknown): message is ContentRequest {
 
   return (
     message.type === 'ANNOTATE_SELECTION' ||
-    message.type === 'GET_ARTICLE_TEXT' ||
     message.type === 'GET_STATE' ||
     message.type === 'UPDATE_SETTINGS'
   );

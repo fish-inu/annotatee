@@ -5,7 +5,6 @@ import { formatAnnotationsAsMarkdown } from './domain/markdown';
 import { isStateChangedMessage } from './extension/messages';
 import { getUserSettings, writeUserSettings } from './extension/storage';
 import type {
-  ArticleTextResponse,
   ContentRequest,
   DeleteAnnotationResponse,
   ExtensionState,
@@ -61,7 +60,6 @@ const annotationCountLabel = computed(() =>
 const canCopy = computed(
   () =>
     state.value.annotations.length > 0 ||
-    (state.value.enabled && settings.value.copy.includeArticleText) ||
     settings.value.copy.customText.trim().length > 0
 );
 
@@ -133,13 +131,8 @@ async function updateAnnotationNote(annotation: StoredAnnotation, event: Event) 
 
 async function copyMarkdown() {
   try {
-    const articleText = settings.value.copy.includeArticleText
-      ? await getArticleTextForCopy()
-      : undefined;
-
     await navigator.clipboard.writeText(
       formatAnnotationsAsMarkdown(records.value, {
-        articleText,
         customText: settings.value.copy.customText
       })
     );
@@ -173,18 +166,6 @@ function updateContextRange(event: Event) {
     context: {
       ...settings.value.context,
       range
-    }
-  });
-}
-
-function toggleIncludeArticleText(event: Event) {
-  const includeArticleText = (event.target as HTMLInputElement).checked;
-
-  void applySettings({
-    ...settings.value,
-    copy: {
-      ...settings.value.copy,
-      includeArticleText
     }
   });
 }
@@ -241,14 +222,6 @@ async function applySettings(nextSettings: UserSettings) {
   if (response?.ok) {
     applyExtensionState(response.state);
   }
-}
-
-async function getArticleTextForCopy(): Promise<string | undefined> {
-  const response = await sendMessageToActiveTab<ArticleTextResponse>({
-    type: 'GET_ARTICLE_TEXT'
-  });
-
-  return response?.ok ? response.articleText : undefined;
 }
 
 function applyExtensionState(nextState: ExtensionState) {
@@ -341,15 +314,6 @@ function hasChromeRuntime(): boolean {
     </section>
 
     <section class="settings-panel" aria-label="Annotation settings">
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          :checked="settings.copy.includeArticleText"
-          @change="toggleIncludeArticleText"
-        />
-        <span>Include article text</span>
-      </label>
-
       <label class="field field--textarea">
         <span>Append text</span>
         <textarea
